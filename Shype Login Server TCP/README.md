@@ -1,160 +1,47 @@
 # Shype P2P Messaging System
 
-A hybrid P2P messaging application similar to Skype that uses TCP protocol for communication.
+A hybrid P2P messaging application similar to Skype that uses UDP (server assist) + UDP P2P for communication with a Terminal.Gui TUI client.
 
 ## Features
 
-✅ **Server-assisted connection discovery**: Server helps clients find and connect to each other  
-✅ **P2P messaging**: Direct client-to-client communication after connection establishment  
-✅ **Dynamic port allocation**: Each user gets a unique P2P port for direct connections  
-✅ **Fallback mechanisms**: Continues working even when server is unavailable  
-✅ **User management**: Login, logout, and user list functionality  
-✅ **Real-time messaging**: Instant message delivery via server or P2P  
-✅ **Graceful degradation**: Switches to P2P-only mode when server is unavailable  
-
-## Architecture
-
-### Hybrid P2P Model
-1. **Server Role**: Facilitates initial user discovery and connection establishment
-2. **Client Role**: Can communicate via server or directly P2P
-3. **Fallback**: When server is unavailable, clients can still chat P2P
-
-### Communication Flow
-1. Client logs in to server with username
-2. Server assigns dynamic P2P port and shares user list
-3. Clients can chat via server relay or establish direct P2P connections
-4. If server goes down, existing P2P connections continue working
-
-## How to Use
-
-### Starting the Server
-```bash
-dotnet run
-# Choose option 1 (Start Server)
-# Enter port (default: 8888)
-```
-
-### Starting a Client
-```bash
-dotnet run
-# Choose option 2 (Start Client) 
-# Enter server address (default: 127.0.0.1)
-# Enter server port (default: 8888)
-# Enter your username
-```
-
-### Client Commands
-- `help` - Show available commands
-- `users` - List all known users
-- `chat <username> <message>` - Send message to a user
-- `status` - Show connection status
-- `quit` - Exit application
-
-## Example Usage
-
-### Terminal 1 - Server
-```
-=== Shype P2P Messaging System ===
-1. Start Server
-2. Start Client
-Choose option (1 or 2): 1
-Enter server port (default 8888): 
-Shype Server started on port 8888
-Waiting for client connections...
-```
-
-### Terminal 2 - Client 1 (Alice)
-```
-=== Shype P2P Messaging System ===
-1. Start Server
-2. Start Client
-Choose option (1 or 2): 2
-Enter server address (default 127.0.0.1): 
-Enter server port (default 8888): 
-Enter your username: Alice
-Connecting to server...
-*** Connected to server ***
-Login successful! Your P2P port: 12345
-
---- Online Users (0) ---
-------------------------
-
-Enter command (or 'help' for commands): 
-```
-
-### Terminal 3 - Client 2 (Bob)
-```
-=== Shype P2P Messaging System ===
-1. Start Server
-2. Start Client
-Choose option (1 or 2): 2
-Enter server address (default 127.0.0.1): 
-Enter server port (default 8888): 
-Enter your username: Bob
-Connecting to server...
-*** Connected to server ***
-Login successful! Your P2P port: 54321
-
---- Online Users (1) ---
-- Alice (Online) [P2P Port: 12345]
-------------------------
-
-Enter command (or 'help' for commands): chat Alice Hello Alice!
-Sending to Alice: Hello Alice!
-```
-
-### Chatting Example
-Alice will see:
-```
-[14:30:25] Bob: Hello Alice!
-Enter command (or 'help' for commands): chat Bob Hi Bob! How are you?
-Sending to Bob: Hi Bob! How are you?
-```
-
-## Technical Implementation
-
-### Message Types
-- `Login` - User authentication and P2P port assignment
-- `Logout` - User disconnection
-- `UserList` - Request/receive list of online users
-- `Chat` - Text messages between users
-- `P2PRequest` - Request direct P2P connection
-- `P2PResponse` - Response to P2P connection request
-- `Heartbeat` - Keep connection alive
-- `ServerShutdown` - Server graceful shutdown notification
-
-### Network Architecture
-- **Server Port**: Default 8888 (configurable)
-- **P2P Ports**: Dynamically assigned (10000-65535 range)
-- **Protocol**: TCP with JSON message format
-- **Fallback**: Server relay → P2P direct → Connection failed
-
-### Resilience Features
-- Automatic P2P connection establishment
-- Server reconnection attempts
-- Graceful handling of network failures
-- Heartbeat mechanism for connection health
-- Seamless transition between server and P2P modes
-
-## Project Structure
-```
-├── Program.cs              # Main application entry point
-├── Models/
-│   ├── User.cs            # User data model
-│   └── Message.cs         # Message protocol definition
-└── Services/
-    ├── ShypeServer.cs     # Server implementation
-    └── ShypeClient.cs     # Client implementation
-```
+✅ Server-assisted peer discovery (UDP)  
+✅ P2P messaging over UDP  
+✅ Graceful fallback to P2P if server goes down  
+✅ Terminal UI with user list, unread badges, and shortcuts  
 
 ## Requirements
-- .NET 9.0
-- TCP network connectivity
-- Available ports for P2P communication
+- .NET 9.0 SDK
+- Linux/macOS/Windows supported
+- Linux only (Terminal UI): ncurses wide-character library
+  - Ubuntu/Debian: `sudo apt-get update && sudo apt-get install -y libncursesw6`
+  - Fedora/RHEL: `sudo dnf install -y ncurses-compat-libs`
+  - Arch/Manjaro: `sudo pacman -S --needed ncurses`
 
-## Testing Scenarios
+If the TUI fails to start with an error like: Error loading native library "libncursesw.so.X", install the package above and re-run.
 
-1. **Normal Operation**: Start server, connect multiple clients, exchange messages
-2. **Server Shutdown**: Stop server while clients are connected - they should continue P2P
-3. **Network Interruption**: Disconnect/reconnect clients to test resilience
-4. **P2P Direct**: Test direct messaging between clients without server relay
+## How to Run
+
+- Start the server (default port 8080):
+```bash
+ dotnet run --project "Shype Login Server TCP.csproj"
+ # Choose option 1
+```
+
+- Start a client:
+```bash
+ dotnet run --project "Shype Login Server TCP.csproj"
+ # Choose option 2, enter username, server address (default localhost)
+```
+
+TUI shortcuts: F1 Help, Tab Switch Pane, Enter Send, Esc All, Ctrl+Q Quit
+
+## Troubleshooting
+- TUI crash on Linux: install libncursesw as above. The client now detects this and exits gracefully with instructions.
+- No peers: connect a second client to the same server; broadcast messages in [All] go to all peers.
+
+## Project Structure
+- Program.cs: menu to launch server or client
+- Services/ShypeServer.cs: UDP server with user list broadcast
+- Services/ShypeClient.cs: UDP P2P client with presence and chat
+- Services/ChatUi.cs: Terminal.Gui-based client UI
+- Models/: Message and User DTOs

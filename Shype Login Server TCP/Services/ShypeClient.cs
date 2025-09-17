@@ -3,24 +3,44 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Linq;
 using Shype_Login_Server_TCP.Models;
 
 namespace Shype_Login_Server_TCP.Services
 {
     public class ShypeClient
     {
-        private TcpClient? _serverConnection;
-        private NetworkStream? _serverStream;
-        private TcpListener? _p2pListener;
-        private readonly ConcurrentDictionary<string, TcpClient> _p2pConnections = new();
+        // UDP to server
+        private UdpClient? _serverClient;
+        private IPEndPoint? _serverEndPoint;
+        // UDP for P2P listening/sending
+        private UdpClient? _p2pClient;
+
+        // Track known peers' P2P endpoints (username -> endpoint)
+        private readonly ConcurrentDictionary<string, IPEndPoint> _p2pPeers = new();
         private readonly ConcurrentDictionary<string, string> _userEndPoints = new();
+        private readonly ConcurrentDictionary<string, DateTime> _peerLastSeen = new();
+        private readonly ConcurrentDictionary<string, bool> _sentJoinTo = new();
+
         private readonly string _username;
         private readonly int _p2pPort;
         private bool _isRunning;
+        private bool _serverOnline;
+
+        // Debounce/dedupe for user list notifications
+        private readonly TimeSpan _userListDebounce = TimeSpan.FromMilliseconds(300);
+        private DateTime _lastUserListPublish = DateTime.MinValue;
+        private HashSet<string> _lastPublishedUsers = new();
+
+        // Presence tuning
+        private readonly TimeSpan _presencePingInterval = TimeSpan.FromSeconds(5);
+        private readonly TimeSpan _peerTimeout = TimeSpan.FromSeconds(15);
+        private CancellationTokenSource? _cts;
 
         public event Action<string>? OnMessageReceived;
         public event Action<List<string>>? OnUserListUpdated;
         public event Action<string>? OnUserDisconnected;
+        public event Action<string, string>? OnChatReceived;
 
         public ShypeClient(string username, int p2pPort = 0)
         {
@@ -32,12 +52,22 @@ namespace Shype_Login_Server_TCP.Services
         {
             try
             {
-                _serverConnection = new TcpClient();
-                await _serverConnection.ConnectAsync(serverAddress, serverPort);
-                _serverStream = _serverConnection.GetStream();
+                // Prefer IPv4 address for compatibility with IPv4 Any binding on server
+                var hostEntry = Dns.GetHostEntry(serverAddress);
+                var serverIp = hostEntry.AddressList.First(a => a.AddressFamily == AddressFamily.InterNetwork);
+                _serverEndPoint = new IPEndPoint(serverIp, serverPort);
+                _serverClient = new UdpClient();
+                // Connect filters inbound to server only; also sets default remote for SendAsync
+                _serverClient.Connect(_serverEndPoint);
 
-                // Start P2P listener
+                // Set running before spinning listeners
+                _isRunning = true;
+                _serverOnline = true;
+                _cts = new CancellationTokenSource();
+
+                // Start P2P UDP listener and maintenance
                 await StartP2PListenerAsync();
+                _ = Task.Run(() => PeerMaintenanceLoopAsync(_cts.Token));
 
                 // Send login message
                 var loginMessage = new Message
@@ -53,141 +83,233 @@ namespace Shype_Login_Server_TCP.Services
                 // Start listening for server messages
                 _ = Task.Run(ListenToServerAsync);
 
-                _isRunning = true;
                 return true;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Failed to connect to server: {ex.Message}");
-                return false;
+                Console.WriteLine($"Failed to connect to server (UDP): {ex.Message}");
+                // Still start P2P to allow decentralized operation with previously known peers
+                _isRunning = true;
+                _serverOnline = false;
+                _cts = new CancellationTokenSource();
+                await StartP2PListenerAsync();
+                _ = Task.Run(() => PeerMaintenanceLoopAsync(_cts.Token));
+                return true;
             }
         }
 
         private async Task StartP2PListenerAsync()
         {
-            _p2pListener = new TcpListener(IPAddress.Any, _p2pPort);
-            _p2pListener.Start();
-            
-            Console.WriteLine($"P2P listener started on port {_p2pPort}");
-            
+            _p2pClient = new UdpClient(new IPEndPoint(IPAddress.Any, _p2pPort));
+            Console.WriteLine($"P2P UDP listener started on port {_p2pPort}");
+
             _ = Task.Run(async () =>
             {
-                while (_isRunning)
+                while (_isRunning && _p2pClient != null)
                 {
                     try
                     {
-                        var client = await _p2pListener.AcceptTcpClientAsync();
-                        _ = Task.Run(() => HandleIncomingP2PConnectionAsync(client));
+                        var result = await _p2pClient.ReceiveAsync();
+                        _ = Task.Run(() => HandleIncomingP2PDatagramAsync(result));
                     }
                     catch (ObjectDisposedException)
                     {
                         break;
                     }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"P2P UDP receive error: {ex.Message}");
+                    }
                 }
             });
         }
 
-        private async Task HandleIncomingP2PConnectionAsync(TcpClient client)
+        private async Task HandleIncomingP2PDatagramAsync(UdpReceiveResult result)
         {
-            var stream = client.GetStream();
-            var buffer = new byte[4096];
-            string? peerUsername = null;
+            var buffer = result.Buffer;
+            var messageJson = Encoding.UTF8.GetString(buffer);
 
             try
             {
-                while (client.Connected && _isRunning)
+                var message = Message.FromJson(messageJson);
+                if (message == null)
                 {
-                    var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                    if (bytesRead == 0) break;
+                    Console.WriteLine("Failed to parse incoming P2P UDP message");
+                    return;
+                }
 
-                    var messageJson = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    Console.WriteLine($"Received P2P message: {messageJson}"); // Debug log
-                    
-                    var message = Message.FromJson(messageJson);
-                    
-                    if (message == null) 
-                    {
-                        Console.WriteLine("Failed to parse incoming P2P message");
-                        continue;
-                    }
+                var peerUsername = message.Sender;
+                if (!string.IsNullOrEmpty(peerUsername))
+                {
+                    _p2pPeers[peerUsername] = result.RemoteEndPoint;
+                    _peerLastSeen[peerUsername] = DateTime.UtcNow;
+                }
 
-                    if (peerUsername == null)
-                    {
-                        peerUsername = message.Sender;
-                        _p2pConnections[peerUsername] = client;
-                        Console.WriteLine($"P2P connection established with {peerUsername}");
-                    }
+                switch (message.Type)
+                {
+                    case MessageType.Presence:
+                        await HandlePresenceAsync(peerUsername, message, result.RemoteEndPoint);
+                        break;
 
-                    if (message.Type == MessageType.Chat)
-                    {
-                        // Skip handshake messages
+                    case MessageType.Chat:
                         if (message.Content == "__HANDSHAKE__")
                         {
-                            Console.WriteLine($"Handshake received from {message.Sender}");
-                            continue;
+                            // Ignore handshake in logs, update last-seen only
+                            return;
                         }
-                        
-                        Console.WriteLine($"Processing chat message from {message.Sender}: {message.Content}");
+                        OnChatReceived?.Invoke(message.Sender, message.Content);
                         OnMessageReceived?.Invoke($"{message.Sender}: {message.Content}");
-                    }
+                        break;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"P2P connection error: {ex.Message}");
+                Console.WriteLine($"P2P UDP message error: {ex.Message}");
             }
-            finally
+        }
+
+        private async Task HandlePresenceAsync(string peerUsername, Message msg, IPEndPoint remoteEp)
+        {
+            var action = msg.Content;
+            if (string.IsNullOrEmpty(peerUsername)) return;
+
+            switch (action)
             {
-                if (peerUsername != null)
+                case "Join":
+                    _p2pPeers[peerUsername] = remoteEp;
+                    _peerLastSeen[peerUsername] = DateTime.UtcNow;
+                    // Ack back
+                    await SendPresenceAsync(remoteEp, "Ack");
+                    PublishUserListIfChanged();
+                    break;
+                case "Leave":
+                    if (_p2pPeers.TryRemove(peerUsername, out _))
+                    {
+                        _peerLastSeen.TryRemove(peerUsername, out _);
+                        _userEndPoints.TryRemove(peerUsername, out _);
+                        _sentJoinTo.TryRemove(peerUsername, out _);
+                        OnUserDisconnected?.Invoke(peerUsername);
+                        PublishUserListIfChanged();
+                    }
+                    break;
+                case "Ping":
+                    _peerLastSeen[peerUsername] = DateTime.UtcNow;
+                    // Optional: reply with Ack
+                    await SendPresenceAsync(remoteEp, "Ack");
+                    break;
+                case "Ack":
+                    _peerLastSeen[peerUsername] = DateTime.UtcNow;
+                    break;
+            }
+        }
+
+        private async Task SendPresenceAsync(IPEndPoint destination, string action)
+        {
+            if (_p2pClient == null) return;
+            var message = new Message
+            {
+                Type = MessageType.Presence,
+                Sender = _username,
+                Content = action,
+                Timestamp = DateTime.UtcNow
+            };
+            var json = message.ToJson();
+            var data = Encoding.UTF8.GetBytes(json);
+            await _p2pClient.SendAsync(data, data.Length, destination);
+        }
+
+        private async Task PeerMaintenanceLoopAsync(CancellationToken token)
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
                 {
-                    _p2pConnections.TryRemove(peerUsername, out _);
-                    OnUserDisconnected?.Invoke(peerUsername);
-                    Console.WriteLine($"P2P connection with {peerUsername} closed");
+                    // Send ping to all peers
+                    foreach (var kvp in _p2pPeers.ToArray())
+                    {
+                        await SendPresenceAsync(kvp.Value, "Ping");
+                    }
+
+                    // Check timeouts
+                    var now = DateTime.UtcNow;
+                    foreach (var kvp in _peerLastSeen.ToArray())
+                    {
+                        if (now - kvp.Value > _peerTimeout)
+                        {
+                            if (_p2pPeers.TryRemove(kvp.Key, out _))
+                            {
+                                _userEndPoints.TryRemove(kvp.Key, out _);
+                                _sentJoinTo.TryRemove(kvp.Key, out _);
+                                _peerLastSeen.TryRemove(kvp.Key, out _);
+                                OnUserDisconnected?.Invoke(kvp.Key);
+                                PublishUserListIfChanged();
+                            }
+                        }
+                    }
                 }
-                client.Close();
+                catch { }
+
+                await Task.Delay(_presencePingInterval, token).ContinueWith(_ => { });
             }
         }
 
         private async Task ListenToServerAsync()
         {
-            if (_serverStream == null) return;
+            if (_serverClient == null) return;
 
-            var buffer = new byte[4096];
             try
             {
-                while (_isRunning && _serverConnection?.Connected == true)
+                while (_isRunning)
                 {
-                    var bytesRead = await _serverStream.ReadAsync(buffer, 0, buffer.Length);
-                    if (bytesRead == 0) break;
-
-                    var messageJson = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    var result = await _serverClient.ReceiveAsync();
+                    var messageJson = Encoding.UTF8.GetString(result.Buffer);
                     var message = Message.FromJson(messageJson);
-                    
+
                     if (message == null) continue;
 
                     switch (message.Type)
                     {
                         case MessageType.Login:
                             Console.WriteLine($"Server: {message.Content}");
-                            if (message.Content == "Login successful")
-                            {
-                                await RequestUserListAsync();
-                            }
+                            // Don't request user list here; server will send it
                             break;
 
                         case MessageType.UserList:
                             await HandleUserListUpdate(message);
                             break;
                         case MessageType.ServerShutdown:
-                            Console.WriteLine("Server is shutting down");
-                            _isRunning = false;
+                            Console.WriteLine("Server is shutting down (continuing in P2P mode)");
+                            _serverOnline = false;
+                            try { _serverClient?.Close(); } catch { }
+                            _serverClient = null;
                             break;
                     }
                 }
             }
+            catch (ObjectDisposedException)
+            {
+                // normal on shutdown
+            }
             catch (Exception ex)
             {
-                Console.WriteLine($"Server connection error: {ex.Message}");
+                Console.WriteLine($"Server UDP receive error: {ex.Message}");
+            }
+        }
+
+        private void PublishUserListIfChanged()
+        {
+            var usernames = _p2pPeers.Keys.Where(u => u != _username).OrderBy(u => u).ToList();
+            var currentSet = new HashSet<string>(usernames);
+            var now = DateTime.UtcNow;
+
+            bool changed = !_lastPublishedUsers.SetEquals(currentSet);
+            bool debounced = now - _lastUserListPublish >= _userListDebounce;
+
+            if (changed && debounced)
+            {
+                _lastPublishedUsers = currentSet;
+                _lastUserListPublish = now;
+                OnUserListUpdated?.Invoke(usernames);
             }
         }
 
@@ -203,26 +325,34 @@ namespace Shype_Login_Server_TCP.Services
                     {
                         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
                     });
-                    
-                    // Request user list immediately after successful login
-                    await Task.Delay(50);
-                    
+
                     if (userList != null)
                     {
-                        _userEndPoints.Clear();
-                        var usernames = new List<string>();
-                        
+                        var changed = false;
                         foreach (var user in userList)
                         {
                             if (!string.IsNullOrEmpty(user.Username) && !string.IsNullOrEmpty(user.EndPoint) && user.Username != _username)
                             {
                                 _userEndPoints[user.Username] = user.EndPoint;
-                                usernames.Add(user.Username);
+                                try
+                                {
+                                    var ep = IPEndPoint.Parse(user.EndPoint);
+                                    if (!_p2pPeers.TryGetValue(user.Username, out var existing) || !Equals(existing, ep))
+                                    {
+                                        _p2pPeers[user.Username] = ep;
+                                        changed = true;
+                                    }
+
+                                    // Send join presence once per peer
+                                    if (_sentJoinTo.TryAdd(user.Username, true))
+                                    {
+                                        await SendPresenceAsync(ep, "Join");
+                                    }
+                                }
+                                catch { }
                             }
                         }
-                        
-                        OnUserListUpdated?.Invoke(usernames);
-                        Console.WriteLine($"User list updated: {string.Join(", ", usernames)}");
+                        if (changed) PublishUserListIfChanged();
                     }
                 }
             }
@@ -234,141 +364,74 @@ namespace Shype_Login_Server_TCP.Services
 
         public async Task SendChatMessageAsync(string targetUsername, string messageContent)
         {
-            // Try existing P2P connection first
-            if (_p2pConnections.TryGetValue(targetUsername, out var existingConnection) && existingConnection.Connected)
+            // Resolve endpoint from known peers or user list
+            if (!_p2pPeers.TryGetValue(targetUsername, out var peerEp))
             {
-                try
+                if (_userEndPoints.TryGetValue(targetUsername, out var endPointStr))
                 {
-                    var message = new Message
+                    try
                     {
-                        Type = MessageType.Chat,
-                        Sender = _username,
-                        Receiver = targetUsername,
-                        Content = messageContent,
-                        Timestamp = DateTime.UtcNow
-                    };
-
-                    await SendP2PMessageAsync(existingConnection, message);
-                    Console.WriteLine($"Sending to {targetUsername}: {messageContent}");
+                        peerEp = IPEndPoint.Parse(endPointStr);
+                        _p2pPeers[targetUsername] = peerEp;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Invalid endpoint for {targetUsername}: {endPointStr} ({ex.Message})");
+                        return;
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"User {targetUsername} not found in user list");
                     return;
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Failed to send via existing connection: {ex.Message}");
-                    _p2pConnections.TryRemove(targetUsername, out _);
-                    existingConnection.Close();
-                }
             }
 
-            // Establish new P2P connection
-            if (_userEndPoints.TryGetValue(targetUsername, out var endPointStr))
+            if (_p2pClient == null)
             {
-                try
-                {
-                    var endPoint = IPEndPoint.Parse(endPointStr);
-                    var p2pClient = new TcpClient();
-                    
-                    // Set a reasonable connection timeout
-                    p2pClient.ReceiveTimeout = 5000;
-                    p2pClient.SendTimeout = 5000;
-                    
-                    await p2pClient.ConnectAsync(endPoint);
-                    Console.WriteLine($"Established P2P connection to {targetUsername} at {endPoint}");
-                    
-                    _p2pConnections[targetUsername] = p2pClient;
-                    
-                    // Send initial handshake message to identify ourselves
-                    var handshakeMessage = new Message
-                    {
-                        Type = MessageType.Chat,
-                        Sender = _username,
-                        Receiver = targetUsername,
-                        Content = "__HANDSHAKE__",
-                        Timestamp = DateTime.UtcNow
-                    };
-                    
-                    await SendP2PMessageAsync(p2pClient, handshakeMessage);
-                    
-                    // Wait a bit for handshake to be processed
-                    await Task.Delay(100);
-                    
-                    // Now send the actual message
-                    var message = new Message
-                    {
-                        Type = MessageType.Chat,
-                        Sender = _username,
-                        Receiver = targetUsername,
-                        Content = messageContent,
-                        Timestamp = DateTime.UtcNow
-                    };
-
-                    await SendP2PMessageAsync(p2pClient, message);
-                    Console.WriteLine($"Sending to {targetUsername}: {messageContent}");
-
-                    // Start handling this P2P connection for future messages
-                    _ = Task.Run(() => HandleOutgoingP2PConnectionAsync(p2pClient, targetUsername));
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Failed to establish P2P connection with {targetUsername}: {ex.Message}");
-                }
+                Console.WriteLine("P2P client not initialized");
+                return;
             }
-            else
-            {
-                Console.WriteLine($"User {targetUsername} not found in user list");
-            }
-        }
-
-        private async Task HandleOutgoingP2PConnectionAsync(TcpClient client, string peerUsername)
-        {
-            var stream = client.GetStream();
-            var buffer = new byte[4096];
 
             try
             {
-                while (client.Connected && _isRunning)
-                {
-                    var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                    if (bytesRead == 0) break;
+                // Optionally send handshake first if we haven't seen this peer recently
+                await SendPresenceAsync(peerEp, "Ping");
+                await Task.Delay(20);
 
-                    var messageJson = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    var message = Message.FromJson(messageJson);
-                    
-                    if (message?.Type == MessageType.Chat && message.Content != "__HANDSHAKE__")
-                    {
-                        Console.WriteLine($"Received reply from {message.Sender}: {message.Content}");
-                        OnMessageReceived?.Invoke($"{message.Sender}: {message.Content}");
-                    }
-                }
+                // Send actual message
+                var message = new Message
+                {
+                    Type = MessageType.Chat,
+                    Sender = _username,
+                    Receiver = targetUsername,
+                    Content = messageContent,
+                    Timestamp = DateTime.UtcNow
+                };
+
+                await SendP2PMessageAsync(peerEp, message);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"P2P connection error with {peerUsername}: {ex.Message}");
-            }
-            finally
-            {
-                _p2pConnections.TryRemove(peerUsername, out _);
-                OnUserDisconnected?.Invoke(peerUsername);
-                client.Close();
+                Console.WriteLine($"Failed to send UDP message to {targetUsername}: {ex.Message}");
             }
         }
 
-        private async Task SendP2PMessageAsync(TcpClient client, Message message)
+        private async Task SendP2PMessageAsync(IPEndPoint destination, Message message)
         {
+            if (_p2pClient == null) return;
             var json = message.ToJson();
             var data = Encoding.UTF8.GetBytes(json);
-            Console.WriteLine($"Sending P2P message: {json}"); // Debug log
-            await client.GetStream().WriteAsync(data, 0, data.Length);
-            await client.GetStream().FlushAsync(); // Ensure message is sent immediately
+            await _p2pClient.SendAsync(data, data.Length, destination);
         }
 
         private async Task SendToServerAsync(Message message)
         {
-            if (_serverStream != null)
+            if (_serverClient != null)
             {
                 var json = message.ToJson();
                 var data = Encoding.UTF8.GetBytes(json);
-                await _serverStream.WriteAsync(data, 0, data.Length);
+                await _serverClient.SendAsync(data, data.Length);
             }
         }
 
@@ -385,35 +448,32 @@ namespace Shype_Login_Server_TCP.Services
 
         public async Task DisconnectAsync()
         {
-            _isRunning = false;
+            // Broadcast leave to peers first
+            foreach (var kvp in _p2pPeers.ToArray())
+            {
+                try { await SendPresenceAsync(kvp.Value, "Leave"); } catch { }
+            }
 
             // Send logout message to server
-            if (_serverStream != null)
+            var logoutMessage = new Message
             {
-                var logoutMessage = new Message
-                {
-                    Type = MessageType.Logout,
-                    Sender = _username,
-                    Timestamp = DateTime.UtcNow
-                };
-                await SendToServerAsync(logoutMessage);
-            }
+                Type = MessageType.Logout,
+                Sender = _username,
+                Timestamp = DateTime.UtcNow
+            };
+            await SendToServerAsync(logoutMessage);
 
-            // Close all P2P connections
-            foreach (var connection in _p2pConnections.Values)
-            {
-                connection.Close();
-            }
-            _p2pConnections.Clear();
+            _isRunning = false;
+            _cts?.Cancel();
 
-            // Close server connection
-            _serverConnection?.Close();
-            _p2pListener?.Stop();
+            // Close UDP clients
+            try { _serverClient?.Close(); } catch { }
+            try { _p2pClient?.Close(); } catch { }
         }
 
         public List<string> GetConnectedUsers()
         {
-            return _userEndPoints.Keys.ToList();
+            return _p2pPeers.Keys.Where(u => u != _username).OrderBy(u => u).ToList();
         }
     }
 }

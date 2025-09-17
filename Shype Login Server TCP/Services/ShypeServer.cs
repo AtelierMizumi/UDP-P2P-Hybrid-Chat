@@ -3,91 +3,79 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
+using System.Linq;
 using Shype_Login_Server_TCP.Models;
 
 namespace Shype_Login_Server_TCP.Services
 {
     public class ShypeServer(int port = 8080)
     {
-        private readonly TcpListener _listener = new(IPAddress.Any, port);
+        // UDP server bound to a port
+        private readonly UdpClient _udpServer = new(new IPEndPoint(IPAddress.Any, port));
+        // Online users and endpoints
         private readonly ConcurrentDictionary<string, User> _users = new();
-        private readonly ConcurrentDictionary<string, TcpClient> _clients = new();
+        private readonly ConcurrentDictionary<string, IPEndPoint> _serverEndpoints = new();
         private bool _isRunning;
 
         public async Task StartAsync()
         {
-            _listener.Start();
             _isRunning = true;
-            Console.WriteLine($"Shype server started on port {((IPEndPoint)_listener.LocalEndpoint).Port}");
+            Console.WriteLine($"Shype UDP server listening on port {((IPEndPoint)_udpServer.Client.LocalEndPoint!).Port}");
 
             while (_isRunning)
             {
                 try
                 {
-                    var client = await _listener.AcceptTcpClientAsync();
-                    _ = Task.Run(() => HandleClientAsync(client));
+                    var result = await _udpServer.ReceiveAsync();
+                    _ = Task.Run(() => HandleDatagramAsync(result));
                 }
                 catch (ObjectDisposedException)
                 {
                     break;
                 }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Server receive error: {ex.Message}");
+                }
             }
         }
 
-        private async Task HandleClientAsync(TcpClient client)
+        private async Task HandleDatagramAsync(UdpReceiveResult result)
         {
-            var stream = client.GetStream();
-            var buffer = new byte[4096];
-            string? username = null;
+            var remoteEndPoint = result.RemoteEndPoint;
+            var json = Encoding.UTF8.GetString(result.Buffer);
+            var message = Message.FromJson(json);
+            if (message == null) return;
 
             try
             {
-                while (client.Connected && _isRunning)
+                switch (message.Type)
                 {
-                    var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                    if (bytesRead == 0) break;
-
-                    var messageJson = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    var message = Message.FromJson(messageJson);
-                    
-                    if (message == null) continue;
-
-                    switch (message.Type)
-                    {
-                        case MessageType.Login:
-                            username = await HandleLoginAsync(message, client, stream);
-                            break;
-                        case MessageType.Logout:
-                            await HandleLogoutAsync(message);
-                            return;
-                        case MessageType.UserList:
-                            await SendUserListAsync(stream);
-                            break;
-                        case MessageType.P2PRequest:
-                            await HandleP2PRequestAsync(message, stream);
-                            break;
-                    }
+                    case MessageType.Login:
+                        await HandleLoginAsync(message, remoteEndPoint);
+                        break;
+                    case MessageType.Logout:
+                        await HandleLogoutAsync(message);
+                        break;
+                    case MessageType.UserList:
+                        await SendUserListAsync(remoteEndPoint);
+                        break;
+                    case MessageType.P2PRequest:
+                        await HandleP2PRequestAsync(message, remoteEndPoint);
+                        break;
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Client error: {ex.Message}");
-            }
-            finally
-            {
-                if (username != null)
-                {
-                    await HandleDisconnectionAsync(username);
-                }
-                client.Close();
+                Console.WriteLine($"Datagram handling error: {ex.Message}");
             }
         }
 
-        private async Task<string?> HandleLoginAsync(Message message, TcpClient client, NetworkStream stream)
+        private async Task HandleLoginAsync(Message message, IPEndPoint remoteEndPoint)
         {
             var username = message.Sender;
             int p2pPort = 0;
-            
+
             // Properly handle JsonElement for P2PPort
             if (message.Data.ContainsKey("P2PPort"))
             {
@@ -110,16 +98,15 @@ namespace Shype_Login_Server_TCP.Services
                     Content = "Login failed: Username already taken or invalid",
                     Timestamp = DateTime.UtcNow
                 };
-                await SendMessageAsync(stream, errorResponse);
-                return null;
+                await SendMessageAsync(remoteEndPoint, errorResponse);
+                return;
             }
 
-            var clientEndPoint = (IPEndPoint)client.Client.RemoteEndPoint!;
-            var p2pEndPoint = new IPEndPoint(clientEndPoint.Address, p2pPort);
+            var p2pEndPoint = new IPEndPoint(remoteEndPoint.Address, p2pPort);
 
             var user = new User(username, p2pEndPoint);
             _users[username] = user;
-            _clients[username] = client;
+            _serverEndpoints[username] = remoteEndPoint;
 
             Console.WriteLine($"User {username} logged in with P2P endpoint {p2pEndPoint}");
 
@@ -129,21 +116,17 @@ namespace Shype_Login_Server_TCP.Services
                 Content = "Login successful",
                 Timestamp = DateTime.UtcNow
             };
-            await SendMessageAsync(stream, response);
+            await SendMessageAsync(remoteEndPoint, response);
 
-            // Add small delay to ensure client is ready to receive messages
+            // Small delay to help client be ready
             await Task.Delay(100);
-            
+
             // Send current user list to the newly connected client first
-            await SendUserListAsync(stream);
-            
-            // Add another small delay before broadcasting to other clients
-            await Task.Delay(50);
-            
+            await SendUserListAsync(remoteEndPoint);
+
             // Then notify all other clients about the new user
+            await Task.Delay(50);
             await BroadcastUserListUpdateAsync();
-            
-            return username;
         }
 
         private async Task HandleLogoutAsync(Message message)
@@ -155,13 +138,13 @@ namespace Shype_Login_Server_TCP.Services
         {
             if (_users.TryRemove(username, out _))
             {
-                _clients.TryRemove(username, out _);
+                _serverEndpoints.TryRemove(username, out _);
                 Console.WriteLine($"User {username} disconnected");
                 await BroadcastUserListUpdateAsync();
             }
         }
 
-        private async Task SendUserListAsync(NetworkStream stream)
+        private async Task SendUserListAsync(IPEndPoint destination)
         {
             var userList = _users.Values.Where(u => u.IsOnline).Select(u => new UserDto
             {
@@ -177,10 +160,10 @@ namespace Shype_Login_Server_TCP.Services
                 Timestamp = DateTime.UtcNow
             };
 
-            await SendMessageAsync(stream, response);
+            await SendMessageAsync(destination, response);
         }
 
-        private async Task HandleP2PRequestAsync(Message message, NetworkStream stream)
+        private async Task HandleP2PRequestAsync(Message message, IPEndPoint destination)
         {
             var targetUsername = message.Receiver;
             if (_users.TryGetValue(targetUsername, out var targetUser))
@@ -196,7 +179,7 @@ namespace Shype_Login_Server_TCP.Services
                     },
                     Timestamp = DateTime.UtcNow
                 };
-                await SendMessageAsync(stream, response);
+                await SendMessageAsync(destination, response);
             }
             else
             {
@@ -206,7 +189,7 @@ namespace Shype_Login_Server_TCP.Services
                     Content = "User not found",
                     Timestamp = DateTime.UtcNow
                 };
-                await SendMessageAsync(stream, response);
+                await SendMessageAsync(destination, response);
             }
         }
 
@@ -226,34 +209,32 @@ namespace Shype_Login_Server_TCP.Services
                 Timestamp = DateTime.UtcNow
             };
 
-            var tasks = _clients.Values.Select(async client =>
+            var tasks = _serverEndpoints.Values.Select(async ep =>
             {
                 try
                 {
-                    await SendMessageAsync(client.GetStream(), message);
+                    await SendMessageAsync(ep, message);
                 }
                 catch
                 {
-                    // Client may be disconnected
+                    // Ignore send errors (client may be gone)
                 }
             });
 
             await Task.WhenAll(tasks);
         }
 
-        private async Task SendMessageAsync(NetworkStream stream, Message message)
+        private async Task SendMessageAsync(IPEndPoint destination, Message message)
         {
             var json = message.ToJson();
             var data = Encoding.UTF8.GetBytes(json);
-            await stream.WriteAsync(data, 0, data.Length);
-            await stream.FlushAsync(); // Ensure message is sent immediately
+            await _udpServer.SendAsync(data, data.Length, destination);
         }
 
         public void Stop()
         {
             _isRunning = false;
-            _listener?.Stop();
-            
+
             // Notify all clients about server shutdown
             var shutdownMessage = new Message
             {
@@ -262,17 +243,22 @@ namespace Shype_Login_Server_TCP.Services
                 Timestamp = DateTime.UtcNow
             };
 
-            var tasks = _clients.Values.Select(async client =>
+            var tasks = _serverEndpoints.Values.Select(async ep =>
             {
                 try
                 {
-                    await SendMessageAsync(client.GetStream(), shutdownMessage);
-                    client.Close();
+                    await SendMessageAsync(ep, shutdownMessage);
                 }
                 catch { }
-            });
+            }).ToArray();
 
-            Task.WaitAll(tasks.ToArray(), TimeSpan.FromSeconds(5));
+            try
+            {
+                Task.WaitAll(tasks, TimeSpan.FromSeconds(3));
+            }
+            catch { }
+
+            _udpServer.Close();
         }
     }
 }

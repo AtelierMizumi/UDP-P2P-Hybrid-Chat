@@ -10,7 +10,8 @@ namespace Shype_Login_Server_TCP.Models
         UserList,
         P2PRequest,
         P2PResponse,
-        ServerShutdown
+        ServerShutdown,
+        Presence // P2P presence: Join/Leave/Ping
     }
 
     public class Message
