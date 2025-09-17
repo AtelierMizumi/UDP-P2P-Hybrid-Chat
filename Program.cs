@@ -6,7 +6,7 @@ namespace Shype_Login_Server_UDP
     {
         static async Task Main(string[] args)
         {
-            Console.WriteLine("Shype P2P Chat System");
+            Console.WriteLine("Shype P2P Chat System made by thuanc177");
             Console.WriteLine("1. Start Server");
             Console.WriteLine("2. Start Client");
             Console.Write("Choose option: ");
