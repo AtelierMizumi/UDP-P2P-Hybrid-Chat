@@ -5,6 +5,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using Terminal.Gui;
 using Shype_Login_Server_TCP.Services;
+using System.Runtime.InteropServices;
+using System.IO;
 
 namespace Shype_Login_Server_TCP.Services
 {
@@ -18,7 +20,6 @@ namespace Shype_Login_Server_TCP.Services
         private TextView? _messagesView;
         private TextField? _input;
         private ListView? _userListView;
-        private Label? _header;
         private StatusBar? _statusBar; // added status bar
 
         // State
@@ -38,6 +39,8 @@ namespace Shype_Login_Server_TCP.Services
 
         public void Run()
         {
+            // On Linux, proactively load ncurses from repo-local paths to support NixOS
+            TryPreloadNcurses();
             try
             {
                 Application.Init();
@@ -46,11 +49,11 @@ namespace Shype_Login_Server_TCP.Services
             {
                 Console.WriteLine("Terminal UI failed to initialize.");
                 Console.WriteLine($"Reason: {ex.Message}");
-                Console.WriteLine("This typically means the ncurses wide-character library is missing.");
-                Console.WriteLine("Install it and try again:");
-                Console.WriteLine("- Ubuntu/Debian:   sudo apt-get update && sudo apt-get install -y libncursesw6");
-                Console.WriteLine("- Fedora/RHEL:     sudo dnf install -y ncurses-compat-libs");
-                Console.WriteLine("- Arch/Manjaro:    sudo pacman -S --needed ncurses");
+                Console.WriteLine("This typically means the ncurses wide-character library is missing or not discoverable.");
+                Console.WriteLine("Install it or set a path and try again:");
+                Console.WriteLine("- Repo-local: put libncursesw.so.6 in './lib' or '<bin dir>/lib' (we try both)");
+                Console.WriteLine("- Env var:   export SHYPE_NCURSES_PATH=/absolute/path/to/libncursesw.so.6");
+                Console.WriteLine("- Ubuntu:    sudo apt-get install -y libncursesw6  | Fedora: sudo dnf install -y ncurses-compat-libs");
                 Console.WriteLine("Exiting client...");
                 return;
             }
@@ -58,18 +61,14 @@ namespace Shype_Login_Server_TCP.Services
             _win = new Window($"Shype - {_username}")
             {
                 X = 0,
-                Y = 1, // leave space for header
+                Y = 0, // use full screen; removed header row
                 Width = Dim.Fill(),
                 Height = Dim.Fill()
             };
 
-            _header = new Label("F1:Help  |  Tab:Switch  |  Enter:Send  |  /chat <user>  /end  /quit")
-            {
-                X = 0,
-                Y = 0,
-                Width = Dim.Fill(),
-                Height = 1
-            };
+            // removed the top green hint header to avoid duplication and save space
+            // _header = new Label(...)
+            // Application.Top.Add(_header);
 
             // Left panel (75%): messages + input
             var leftPanel = new FrameView("Messages")
@@ -85,7 +84,7 @@ namespace Shype_Login_Server_TCP.Services
                 X = 0,
                 Y = 0,
                 Width = Dim.Fill(),
-                Height = Dim.Fill() - 2,
+                Height = Dim.Fill() - 1, // a bit taller; only reserve 1 line for input
                 ReadOnly = true,
                 WordWrap = true
             };
@@ -249,9 +248,10 @@ namespace Shype_Login_Server_TCP.Services
                 })
             });
 
-            Application.Top.Add(_header);
+            // Attach panels to main window (previously missing)
             _win.Add(leftPanel);
             _win.Add(rightPanel);
+
             Application.Top.Add(_win);
             Application.Top.Add(_statusBar);
 
@@ -259,6 +259,9 @@ namespace Shype_Login_Server_TCP.Services
             _client.OnUserListUpdated += users => Application.MainLoop.Invoke(() => UpdateUserList(users));
             _client.OnUserDisconnected += user => Application.MainLoop.Invoke(() => OnPeerDisconnected(user));
             _client.OnChatReceived += (from, content) => Application.MainLoop.Invoke(() => OnIncomingMessage(from, content));
+
+            // Proactively request user list on UI startup
+            _ = Task.Run(async () => { try { await _client.RequestUserListAsync(); } catch { } });
 
             // Seed initial list with All
             RefreshUserListView();
@@ -289,7 +292,9 @@ namespace Shype_Login_Server_TCP.Services
                     SetCurrentView(AllLabel);
                     break;
                 case "/users":
-                    AppendSystem("Users list refreshed");
+                    AppendSystem("Requesting users list from server...");
+                    try { await _client.RequestUserListAsync(); } catch { }
+                    // UI will refresh when event arrives; still refresh now
                     RefreshUserListView();
                     break;
                 case "/help":
@@ -379,22 +384,33 @@ namespace Shype_Login_Server_TCP.Services
 
         private void UpdateUserList(IEnumerable<string> users)
         {
-            var changed = false;
-            foreach (var u in users)
+            // Materialize to avoid multiple enumeration issues
+            var newSet = new SortedSet<string>(users);
+
+            // Compute changes
+            bool changed = !_peers.SetEquals(newSet);
+            if (!changed) return;
+
+            // Remove peers that disappeared
+            var removed = _peers.Except(newSet).ToList();
+            foreach (var u in removed)
             {
-                if (_peers.Add(u)) changed = true;
-            }
-            // Remove peers not in the new set
-            var toRemove = _peers.Where(p => !users.Contains(p)).ToList();
-            foreach (var u in toRemove)
-            {
-                _peers.Remove(u);
                 _unreadByPeer.Remove(u);
                 _messagesByPeer.Remove(u);
-                if (_currentView == u) _currentView = AllLabel;
-                changed = true;
             }
-            if (changed) RefreshUserListView();
+
+            // Replace set atomically
+            _peers.Clear();
+            foreach (var u in newSet) _peers.Add(u);
+
+            // Ensure current view is valid
+            if (_currentView != AllLabel && !_peers.Contains(_currentView))
+            {
+                _currentView = AllLabel;
+                RefreshMessagesView();
+            }
+
+            RefreshUserListView();
         }
 
         private void OnPeerDisconnected(string user)
@@ -516,6 +532,82 @@ namespace Shype_Login_Server_TCP.Services
                        "Shortcuts:\n" +
                        "F1 Help, Tab Switch Pane, Enter Send, Esc All, Ctrl+Q Quit";
             MessageBox.Query(50, 14, "Help", help, "OK");
+        }
+
+        private void TryPreloadNcurses()
+        {
+            try
+            {
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return;
+
+                // If an explicit override is provided, try that first
+                var overridePath = Environment.GetEnvironmentVariable("SHYPE_NCURSES_PATH");
+                if (!string.IsNullOrWhiteSpace(overridePath) && File.Exists(overridePath))
+                {
+                    NativeLibrary.Load(overridePath);
+                    return;
+                }
+
+                var candidates = new List<string>();
+
+                // Gather likely roots to search: baseDir, its parents, and CWD
+                var baseDir = AppContext.BaseDirectory?.TrimEnd(Path.DirectorySeparatorChar) ?? string.Empty;
+                var cwd = Directory.GetCurrentDirectory();
+                var roots = new HashSet<string>(StringComparer.Ordinal)
+                {
+                    baseDir
+                };
+                if (!string.IsNullOrEmpty(cwd)) roots.Add(cwd);
+                // Walk up a few parents from baseDir to catch repo root
+                var dir = baseDir;
+                for (int i = 0; i < 5 && !string.IsNullOrEmpty(dir); i++)
+                {
+                    var parent = Path.GetDirectoryName(dir);
+                    if (string.IsNullOrEmpty(parent) || parent == dir) break;
+                    roots.Add(parent);
+                    dir = parent;
+                }
+
+                foreach (var root in roots)
+                {
+                    candidates.Add(Path.Combine(root, "lib", "libncursesw.so.6"));
+                    candidates.Add(Path.Combine(root, "lib", "libncursesw.so.5"));
+                    candidates.Add(Path.Combine(root, "lib", "libncursesw.so"));
+                }
+
+                // Also consider LD_LIBRARY_PATH entries
+                var ld = Environment.GetEnvironmentVariable("LD_LIBRARY_PATH");
+                if (!string.IsNullOrWhiteSpace(ld))
+                {
+                    foreach (var p in ld.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        candidates.Add(Path.Combine(p, "libncursesw.so.6"));
+                        candidates.Add(Path.Combine(p, "libncursesw.so.5"));
+                        candidates.Add(Path.Combine(p, "libncursesw.so"));
+                    }
+                }
+
+                foreach (var path in candidates)
+                {
+                    try
+                    {
+                        if (File.Exists(path))
+                        {
+                            NativeLibrary.Load(path);
+                            return;
+                        }
+                    }
+                    catch { /* try next */ }
+                }
+                // As a last resort, attempt by name in case loader paths are already set
+                try { NativeLibrary.Load("libncursesw.so.6"); return; } catch { }
+                try { NativeLibrary.Load("libncursesw.so.5"); return; } catch { }
+                try { NativeLibrary.Load("libncursesw.so"); return; } catch { }
+            }
+            catch
+            {
+                // Ignore; Application.Init will report a clearer error if load fails
+            }
         }
     }
 }

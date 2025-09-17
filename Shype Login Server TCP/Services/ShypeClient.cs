@@ -83,6 +83,9 @@ namespace Shype_Login_Server_TCP.Services
                 // Start listening for server messages
                 _ = Task.Run(ListenToServerAsync);
 
+                // Proactively request user list to avoid relying on a single UDP packet
+                await RequestUserListAsync();
+
                 return true;
             }
             catch (Exception ex)
@@ -353,6 +356,10 @@ namespace Shype_Login_Server_TCP.Services
                             }
                         }
                         if (changed) PublishUserListIfChanged();
+
+                        // Always publish current list to UI so the latest-connected client updates immediately
+                        var names = _p2pPeers.Keys.Where(u => u != _username).OrderBy(u => u).ToList();
+                        OnUserListUpdated?.Invoke(names);
                     }
                 }
             }
@@ -435,7 +442,8 @@ namespace Shype_Login_Server_TCP.Services
             }
         }
 
-        private async Task RequestUserListAsync()
+        // Make this public so UI can trigger refresh and connect can call it
+        public async Task RequestUserListAsync()
         {
             var message = new Message
             {
