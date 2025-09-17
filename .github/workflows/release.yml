@@ -24,11 +24,11 @@ jobs:
           dotnet-version: '9.0.x'
 
       - name: Restore
-        run: dotnet restore "Shype Login Server TCP.csproj"
+        run: dotnet restore "Shype Login Server UDP.csproj"
 
       - name: Publish ${{ matrix.rid }}
         run: >-
-          dotnet publish "Shype Login Server TCP.csproj"
+          dotnet publish "Shype Login Server UDP.csproj"
           -c Release
           -r ${{ matrix.rid }}
           --self-contained true

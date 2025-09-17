@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT="Shype Login Server TCP.csproj"
+PROJECT="Shype Login Server UDP.csproj"
 OUTROOT="publish"
 
 usage() {

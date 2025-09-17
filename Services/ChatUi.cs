@@ -1,4 +1,4 @@
-// filepath: /home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/Services/ChatUi.cs
+// filepath: /home/thuanc177/RiderProjects/Shype Login Server UDP/Shype Login Server UDP/Services/ChatUi.cs
 using System;
 using System.Collections.Generic;
 using System.Linq;
