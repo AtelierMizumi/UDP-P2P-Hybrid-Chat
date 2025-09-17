@@ -1,5 +1,8 @@
 name: Build and Release
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [ main ]
@@ -67,5 +70,4 @@ jobs:
             artifacts/shype-win-x64/*
             artifacts/shype-linux-x64/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
