@@ -1,0 +1,14 @@
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/bin/Debug/net9.0/Shype Login Server TCP
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/bin/Debug/net9.0/Shype Login Server TCP.deps.json
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/bin/Debug/net9.0/Shype Login Server TCP.runtimeconfig.json
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/bin/Debug/net9.0/Shype Login Server TCP.dll
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/bin/Debug/net9.0/Shype Login Server TCP.pdb
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/Shype Login Server TCP.GeneratedMSBuildEditorConfig.editorconfig
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/Shype Login Server TCP.AssemblyInfoInputs.cache
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/Shype Login Server TCP.AssemblyInfo.cs
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/Shype Login Server TCP.csproj.CoreCompileInputs.cache
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/Shype Login Server TCP.dll
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/refint/Shype Login Server TCP.dll
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/Shype Login Server TCP.pdb
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/Shype Login Server TCP.genruntimeconfig.cache
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/ref/Shype Login Server TCP.dll
