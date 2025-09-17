@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Shype Login Server TCP")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+df1678c7499f28aa640ea164f8ca3d820fdc46ee")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b37b31270a5c6134fb03840c25c797ca48547bbd")]
 [assembly: System.Reflection.AssemblyProductAttribute("Shype Login Server TCP")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Shype Login Server TCP")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -22,3 +22,4 @@
 /home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/bin/Debug/net9.0/pt-PT/Terminal.Gui.resources.dll
 /home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/bin/Debug/net9.0/runtimes/win/lib/net7.0/System.Management.dll
 /home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/Shype Lo.BB386774.Up2Date
+/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/obj/Debug/net9.0/Shype Login Server TCP.sourcelink.json

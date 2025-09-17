@@ -160,6 +160,30 @@ namespace Shype_Login_Server_TCP.Services
                     msgScroll.OtherScrollBarView.Position = _messagesView.LeftColumn;
                 _messagesView.SetNeedsDisplay();
             };
+            _messagesView.DrawContent += _ =>
+            {
+                // Compute content size: number of lines and max line length
+                int lines = 0;
+                int maxWidth = 0;
+                try
+                {
+                    var text = _messagesView.Text?.ToString() ?? string.Empty;
+                    var split = text.Split('\n');
+                    lines = split.Length;
+                    foreach (var line in split)
+                    {
+                        var len = line.Length; // approximate width; good enough for ASCII/most cases
+                        if (len > maxWidth) maxWidth = len;
+                    }
+                }
+                catch { }
+
+                msgScroll.Size = Math.Max(lines, 0);
+                msgScroll.Position = _messagesView.TopRow;
+                msgScroll.OtherScrollBarView.Size = Math.Max(maxWidth, 0);
+                msgScroll.OtherScrollBarView.Position = _messagesView.LeftColumn;
+                msgScroll.Refresh();
+            };
 
             leftPanel.Add(_input);
 
