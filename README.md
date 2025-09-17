@@ -1,5 +1,7 @@
 # Shype P2P Messaging System
 
+<p align="center"><img src=".github/screenshots/overview.png" alt="Over View"/></p>
+
 A hybrid P2P messaging application similar to Skype that uses UDP (server assist) + UDP P2P for communication with a Terminal.Gui TUI client.
 
 ## Features
