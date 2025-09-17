@@ -70,4 +70,4 @@ jobs:
             artifacts/shype-win-x64/*
             artifacts/shype-linux-x64/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
