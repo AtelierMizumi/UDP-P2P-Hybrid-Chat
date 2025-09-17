@@ -1,14 +1,17 @@
 {
   "version": 2,
-  "dgSpecHash": "F7TKf/oKf1U=",
+  "dgSpecHash": "dv9hhZXvTes=",
   "success": true,
   "projectFilePath": "/home/thuanc177/RiderProjects/Shype Login Server TCP/Shype Login Server TCP/Shype Login Server TCP.csproj",
   "expectedPackageFiles": [
+    "/home/thuanc177/.nuget/packages/microsoft.net.illink.tasks/9.0.8/microsoft.net.illink.tasks.9.0.8.nupkg.sha512",
     "/home/thuanc177/.nuget/packages/nstack.core/1.0.7/nstack.core.1.0.7.nupkg.sha512",
     "/home/thuanc177/.nuget/packages/system.codedom/7.0.0/system.codedom.7.0.0.nupkg.sha512",
     "/home/thuanc177/.nuget/packages/system.management/7.0.2/system.management.7.0.2.nupkg.sha512",
     "/home/thuanc177/.nuget/packages/system.valuetuple/4.5.0/system.valuetuple.4.5.0.nupkg.sha512",
-    "/home/thuanc177/.nuget/packages/terminal.gui/1.14.0/terminal.gui.1.14.0.nupkg.sha512"
+    "/home/thuanc177/.nuget/packages/terminal.gui/1.14.0/terminal.gui.1.14.0.nupkg.sha512",
+    "/home/thuanc177/.nuget/packages/microsoft.netcore.app.runtime.linux-x64/9.0.8/microsoft.netcore.app.runtime.linux-x64.9.0.8.nupkg.sha512",
+    "/home/thuanc177/.nuget/packages/microsoft.aspnetcore.app.runtime.linux-x64/9.0.8/microsoft.aspnetcore.app.runtime.linux-x64.9.0.8.nupkg.sha512"
   ],
   "logs": []
 }
