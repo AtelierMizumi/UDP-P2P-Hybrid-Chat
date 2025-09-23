@@ -13,7 +13,7 @@ namespace Shype_Login_Server_UDP
             
             var choice = Console.ReadLine();
             
-            switch (choice)
+            switch (choice) 
             {
                 case "1":
                     await StartServerAsync();

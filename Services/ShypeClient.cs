@@ -23,9 +23,13 @@ namespace Shype_Login_Server_UDP.Services
         private readonly ConcurrentDictionary<string, bool> _sentJoinTo = new();
 
         private readonly string _username;
-        private readonly int _p2pPort;
+        private int _p2pPort;
         private bool _isRunning;
         private bool _serverOnline;
+
+        // Preferred P2P port range
+        private const int PortRangeStart = 10000;
+        private const int PortRangeEnd = 12000;
 
         // Debounce/dedupe for user list notifications
         private readonly TimeSpan _userListDebounce = TimeSpan.FromMilliseconds(300);
@@ -45,7 +49,15 @@ namespace Shype_Login_Server_UDP.Services
         public ShypeClient(string username, int p2pPort = 0)
         {
             _username = username;
-            _p2pPort = p2pPort > 0 ? p2pPort : new Random().Next(9000, 10000);
+            // Start from supplied port if valid; otherwise start at beginning of the preferred range
+            if (p2pPort >= PortRangeStart && p2pPort <= PortRangeEnd)
+            {
+                _p2pPort = p2pPort;
+            }
+            else
+            {
+                _p2pPort = PortRangeStart;
+            }
         }
 
         public async Task<bool> ConnectToServerAsync(string serverAddress, int serverPort)
@@ -103,8 +115,35 @@ namespace Shype_Login_Server_UDP.Services
 
         private async Task StartP2PListenerAsync()
         {
-            _p2pClient = new UdpClient(new IPEndPoint(IPAddress.Any, _p2pPort));
-            Console.WriteLine($"P2P UDP listener started on port {_p2pPort}");
+            // Find a free UDP port within the preferred range [PortRangeStart, PortRangeEnd],
+            // starting at the current _p2pPort and wrapping around once.
+            int startPort = (_p2pPort >= PortRangeStart && _p2pPort <= PortRangeEnd) ? _p2pPort : PortRangeStart;
+            int port = startPort;
+            int attempts = 0;
+            int maxAttempts = PortRangeEnd - PortRangeStart + 1;
+
+            while (attempts < maxAttempts)
+            {
+                try
+                {
+                    _p2pClient = new UdpClient(new IPEndPoint(IPAddress.Any, port));
+                    _p2pPort = ((IPEndPoint)_p2pClient.Client.LocalEndPoint!).Port;
+                    Console.WriteLine($"P2P UDP listener started on port {_p2pPort}");
+                    break;
+                }
+                catch (SocketException se) when (se.SocketErrorCode == SocketError.AddressAlreadyInUse || se.SocketErrorCode == SocketError.AccessDenied)
+                {
+                    // Try next port in range
+                    port++;
+                    if (port > PortRangeEnd) port = PortRangeStart;
+                    attempts++;
+                }
+            }
+
+            if (_p2pClient == null)
+            {
+                throw new InvalidOperationException($"No free UDP port available in range {PortRangeStart}-{PortRangeEnd}.");
+            }
 
             _ = Task.Run(async () =>
             {
